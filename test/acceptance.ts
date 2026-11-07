@@ -131,7 +131,7 @@ await new Promise<void>(resolve => {
 });
 // A raw frame straight at a peer's socket, resolving with its reply.
 const rawsend = (sock: string, frame: object) => {
-	const { promise, resolve } = Promise.withResolvers<{ ok: boolean; error?: string }>();
+	const { promise, resolve } = Promise.withResolvers<{ ok: boolean; outcome?: string; error?: string }>();
 	const s = net.createConnection(sock);
 	s.on("connect", () => s.write(`${JSON.stringify(frame)}\n`));
 	s.on("data", d => { s.destroy(); resolve(JSON.parse(String(d).split("\n")[0]!)); });
@@ -431,6 +431,60 @@ check(
 	cliToPeer1.code === 0 && evs("peer1", "inbound").some(e => e.via === "user" && String(e.text).includes("typed by a person")),
 	"CLI text still arrives as a user message",
 	cliToPeer1.out.trim(),
+);
+
+// Human and peer frames may use the same sender label, but must retain their own authorship.
+for (const firstHuman of [true, false]) {
+	const order = firstHuman ? "human-first" : "peer-first";
+	const humanBody = `${order}-human`;
+	const peerBody = `${order}-peer`;
+	const markerBody = `${order}-barrier`;
+	const firstFrame = {
+		t: "msg", from: "peer2", to: "sess-peer1", body: firstHuman ? humanBody : peerBody, hop: 0,
+		...(firstHuman ? { human: true } : {}),
+	};
+	const first = rawsend(peer1Sock, firstFrame);
+	const barrier = rawsend(peer1Sock, { ...firstFrame, body: markerBody, human: firstHuman });
+	const admitted = await Promise.race([first, barrier]);
+	check(admitted.ok && admitted.outcome === "coalesced", `${order} first-authorship batch is admitted before the other authorship arrives`);
+	await Promise.all([
+		first,
+		barrier,
+		rawsend(peer1Sock, { ...firstFrame, body: firstHuman ? peerBody : humanBody, human: !firstHuman }),
+	]);
+	// Reading a later tool result drains preceding inbound events from the host's stdout.
+	await tool("peer1", "peers", {});
+	const humanMessages = evs("peer1", "inbound").filter(e => String(e.text).includes(humanBody));
+	const peerMessages = evs("peer1", "inbound").filter(e => String(e.text).includes(peerBody));
+	check(
+		humanMessages.length === 1 && humanMessages[0]?.via === "user" &&
+			!String(humanMessages[0]?.text).includes(peerBody) &&
+			peerMessages.length === 1 && peerMessages[0]?.via === "custom" &&
+			peerMessages[0]?.attribution === "agent" && !String(peerMessages[0]?.text).includes(humanBody),
+		`${order} messages keep human and peer authorship separate`,
+	);
+	const firstMessages = firstHuman ? humanMessages : peerMessages;
+	check(
+		firstMessages.length === 1 && String(firstMessages[0]?.text).includes(markerBody),
+		`${order} same-authorship frames still coalesce into one delivery`,
+	);
+}
+
+// A coalesced acknowledgement proves the old session admitted the pending batch.
+const switchingSock = path.join(home, `.agent-collective/default/${procs.sw!.pid}.sock`);
+const switchingFrame = { t: "msg", from: "peer2", to: "sess-swA", body: "must-not-enter-replacement", hop: 0 };
+const pendingSwitch = rawsend(switchingSock, switchingFrame);
+const switchBarrier = rawsend(switchingSock, { ...switchingFrame, body: "switch-admission-barrier" });
+const admittedSwitch = await Promise.race([pendingSwitch, switchBarrier]);
+check(admittedSwitch.ok && admittedSwitch.outcome === "coalesced", "the old session admits the batch before switching");
+await switchTo("sw", "sess-swC");
+const switchReplies = await Promise.all([pendingSwitch, switchBarrier]);
+await tool("sw", "peers", {});
+const replacementRecord = JSON.parse(fs.readFileSync(path.join(home, `.agent-collective/default/${procs.sw!.pid}.json`), "utf8")) as { sessionId?: string };
+check(
+	switchReplies.some(reply => reply.ok === false) && replacementRecord.sessionId === "sess-swC" &&
+		evs("sw", "inbound").every(e => !String(e.text).includes("must-not-enter-replacement") && !String(e.text).includes("switch-admission-barrier")),
+	"a session switch during coalescing refuses delivery without injecting into the replacement",
 );
 
 cmd("owner", { cmd: "exit" });

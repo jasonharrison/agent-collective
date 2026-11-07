@@ -5,6 +5,10 @@
 - Keep omp collective presence, busy state, and peer tools with the top-level session when
   in-process subagents start or shut down. Subagents cannot list or message peers as their
   parent; hosts without omp agent identity retain their existing behavior.
+- Deliver peer messages as agent-attributed custom messages instead of human prompts.
+  Human and peer messages with the same sender label coalesce into separate batches.
+- Bind messages to the resolved recipient session and refuse delivery after an in-flight
+  session switch. Older senders are rejected; follow the [rollout instructions](README.md#limits).
 
 ## 0.5.4
 

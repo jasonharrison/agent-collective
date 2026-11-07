@@ -181,6 +181,10 @@ that callsign immediately; it is not reserved.
 
 - **Same machine only.** Unix sockets, one directory per profile. For remote pairing use omp's
   `/collab`.
+- **Session-bound delivery requires upgraded installations.** Upgrade every participating
+  extension and CLI installation, including the CLI used by Tern, then restart running
+  sessions. Older senders are rejected by upgraded receivers; restarting an unchanged old
+  installation is not enough.
 - **0.3.x and 0.4 sessions cannot see each other.** 0.4 moved records into per-profile directories;
   restart every session after upgrading.
 - **A suspended peer cannot answer.** Sends to a `SIGSTOP`ped or sleeping process fail after the
@@ -193,8 +197,9 @@ that callsign immediately; it is not reserved.
   is a *behavioural* loop — A wakes B, B's turn wakes A — where each delivery is a legitimate
   single hop, so no transport-level guard trips. Raise or lower `MAX_HOPS` in `index.ts` if 4 is
   wrong for you.
-- **Bursts become one wake.** Messages from one peer arriving within 400 ms are delivered as a single
-  numbered batch, so N messages cost one turn rather than N.
+- **Bursts coalesce within one authorship.** Messages with the same sender and human/peer
+  origin arriving within 400 ms become one numbered batch. Human and peer messages never
+  share a batch, even when their sender labels match.
 - **A reply is a new message, not a tool result.** `peer_send` is fire-and-forget: the peer's answer
   arrives later as its own message, so it is not tracked by the host's `wait` tool.
 - **Peer text is not human authorship.** A peer's message is delivered as an agent-attributed custom

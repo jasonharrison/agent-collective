@@ -189,7 +189,7 @@ class CollectiveNode {
 	readonly #startedAt = Date.now();
 	/** omp hands extensions managed timers on the context; pi does not. */
 	readonly #via: "omp" | "pi";
-	/** Bodies accumulating inside the current burst window, keyed by sender. */
+	/** Bodies accumulating inside the current burst window, keyed by sender and authorship. */
 	readonly #pending = new Map<string, { bodies: string[]; hop: number }>();
 	/**
 	 * Hop of the peer message that woke the current turn; undefined when the turn was started
@@ -805,33 +805,34 @@ class CollectiveNode {
 			return;
 		}
 		/**
-		 * Coalesce a burst from one peer into a single wake. Each delivery to an idle agent
-		 * costs a real turn, so N messages must not mean N turns. The first frame waits out
+		 * Coalesce a burst from one sender and authorship into a single wake. Each delivery to an idle
+		 * agent costs a real turn, so N messages must not mean N turns. The first frame waits out
 		 * a short window and then delivers everything that accumulated; later frames in the
 		 * window return immediately. An in-flight flag cannot do this job — delivery
 		 * resolves inside the same macrotask, so no second frame ever observes it.
 		 */
-		const pending = this.#pending.get(frame.from);
+		const human = frame.human === true;
+		const batchKey = `${human ? "human" : "peer"}:${frame.from}`;
+		const pending = this.#pending.get(batchKey);
 		if (pending) {
 			pending.bodies.push(frame.body);
 			pending.hop = Math.min(pending.hop, hop);
 			socket.write(`${JSON.stringify({ ok: true, outcome: "coalesced" })}\n`);
 			return;
 		}
-		this.#pending.set(frame.from, { bodies: [frame.body], hop });
-		const human = frame.human === true;
+		this.#pending.set(batchKey, { bodies: [frame.body], hop });
 		try {
 			const { promise, resolve } = Promise.withResolvers<void>();
 			const timer = setTimeout(resolve, COALESCE_MS);
 			timer.unref?.();
 			await promise;
 			if (this.#stopped || this.#ctx.sessionManager.getSessionId() !== this.hostSessionId) {
-				this.#pending.delete(frame.from);
+				this.#pending.delete(batchKey);
 				socket.write(`${JSON.stringify({ ok: false, error: "recipient session changed; message not delivered" })}\n`);
 				return;
 			}
-			const batch = this.#pending.get(frame.from) ?? { bodies: [frame.body], hop };
-			this.#pending.delete(frame.from);
+			const batch = this.#pending.get(batchKey) ?? { bodies: [frame.body], hop };
+			this.#pending.delete(batchKey);
 			const body =
 				batch.bodies.length === 1
 					? batch.bodies[0]
@@ -839,7 +840,7 @@ class CollectiveNode {
 			const outcome = this.#inject({ from: frame.from, body: body ?? "", replyTo: frame.replyTo, hop: batch.hop, human });
 			socket.write(`${JSON.stringify({ ok: true, outcome })}\n`);
 		} catch (error) {
-			this.#pending.delete(frame.from);
+			this.#pending.delete(batchKey);
 			socket.write(`${JSON.stringify({ ok: false, error: error instanceof Error ? error.message : String(error) })}\n`);
 		}
 	}
