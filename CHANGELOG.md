@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Keep omp collective presence, busy state, and peer tools with the top-level session when
+  in-process subagents start or shut down. Subagents cannot list or message peers as their
+  parent; hosts without omp agent identity retain their existing behavior.
+
 ## 0.5.4
 
 - `/resume` inside a running omp now brings back the resumed session's callsign (its `/callsign`

@@ -367,32 +367,41 @@ await spawn("owner", { HOST: "omp", SESSION_ID: "sess-owner", AGENT_KIND: "main"
 await spawn("peer1", { HOST: "omp", SESSION_ID: "sess-peer1" });
 await spawn("peer2", { HOST: "omp", SESSION_ID: "sess-peer2" });
 await spawn("kid", { HOST: "omp", SESSION_ID: "sess-kid", AGENT_KIND: "sub" });
+cmd("owner", { cmd: "input" });
 const subStartId = ++seq;
 cmd("owner", { cmd: "sub-start", id: subStartId });
 while (!procs.owner!.evs.some(e => e.ev === "sub-started" && e.id === subStartId)) await sleep(20);
-check((await whoami("owner")) === "owner", "a top-level session keeps its callsign while a subagent session runs");
+const ownerPeers = await tool("owner", "peers", {});
+check(ownerPeers.includes("You are `owner`") && ownerPeers.includes("`peer1`"), "the top-level session keeps its callsign and peer access while a separately registered child runs");
 const ownerRecord = path.join(home, `.agent-collective/default/${procs.owner!.pid}.json`);
 const ownerRecordFile = fs.existsSync(ownerRecord)
 	? (JSON.parse(fs.readFileSync(ownerRecord, "utf8")) as { sessionId?: string; busy?: boolean })
 	: undefined;
 check(
-	ownerRecordFile?.sessionId === "sess-owner" && ownerRecordFile?.busy === false,
-	"the process record still names the top-level session",
+	ownerRecordFile?.sessionId === "sess-owner" && ownerRecordFile?.busy === true,
+	"child startup leaves the parent's session identity and busy state intact",
 );
+const subPeers = await tool("owner", "peers", {}, true);
+const kidPeers = await tool("kid", "peers", {});
 check(
-	(await tool("owner", "peers", {}, true)).includes("unavailable inside a task subagent") &&
-		(await tool("owner", "peer_send", { to: "peer1", message: "from sub" }, true)).includes("unavailable inside a task subagent") &&
-		(await tool("kid", "peers", {})).includes("unavailable inside a task subagent"),
-	"peer tools are refused inside a subagent",
+	![subPeers, kidPeers].some(roster => roster.includes("`peer1`") || roster.includes("`peer2`")),
+	"child peer tools do not expose the parent's peer roster",
 );
+check(!fs.existsSync(path.join(home, `.agent-collective/default/${procs.kid!.pid}.json`)), "a subagent-only process publishes no collective presence");
+await tool("owner", "peer_send", { to: "peer1", message: "must not arrive from child" }, true);
 const subEndId = ++seq;
 cmd("owner", { cmd: "sub-end", id: subEndId });
 while (!procs.owner!.evs.some(e => e.ev === "sub-ended" && e.id === subEndId)) await sleep(20);
 cmd("kid", { cmd: "exit" });
-await sleep(300);
-check(fs.existsSync(ownerRecord), "a subagent shutdown does not remove the parent's record");
-check((await tool("owner", "peer_send", { to: "peer1", message: "still reachable" })).startsWith("Delivered"), "the parent can still send after its subagent exits");
+const afterChildExit = fs.existsSync(ownerRecord)
+	? (JSON.parse(fs.readFileSync(ownerRecord, "utf8")) as { sessionId?: string; busy?: boolean })
+	: undefined;
+check(afterChildExit?.sessionId === "sess-owner" && afterChildExit?.busy === true, "child shutdown preserves the parent's presence and busy state");
+cmd("owner", { cmd: "end" });
+await tool("owner", "peer_send", { to: "peer1", message: "still reachable" });
 await sleep(700);
+check(evs("peer1", "inbound").some(e => String(e.text).includes("still reachable")), "the parent can still deliver messages after its child exits");
+check(evs("peer1", "inbound").every(e => !String(e.text).includes("must not arrive from child")), "child peer_send delivers no message");
 
 // A claim whose live pid holds a different callsign, or whose start time is another process's,
 // is not that peer: the reservation is reported instead of delivering to a stranger.
@@ -422,6 +431,13 @@ check(
 	cliToPeer1.code === 0 && evs("peer1", "inbound").some(e => e.via === "user" && String(e.text).includes("typed by a person")),
 	"CLI text still arrives as a user message",
 	cliToPeer1.out.trim(),
+);
+
+cmd("owner", { cmd: "exit" });
+await procs.owner!.p.exited;
+check(
+	!fs.existsSync(ownerRecord) && !fs.existsSync(path.join(home, `.agent-collective/default/${procs.owner!.pid}.sock`)),
+	"top-level shutdown still removes its presence record and socket",
 );
 
 for (const { p } of Object.values(procs)) p.kill();

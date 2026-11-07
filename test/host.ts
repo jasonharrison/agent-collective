@@ -35,7 +35,7 @@ const custom = async (factory: (tui: unknown, theme: unknown, kb: unknown, done:
 };
 const ctx = {
 	cwd: process.env.CWD ?? `/tmp/${process.env.NAME}`,
-	agent: { kind: agentKind, id: process.env.NAME!, name: agentKind === "sub" ? "task" : "main", depth: agentKind === "sub" ? 1 : 0 },
+	...(omp ? { agent: { kind: agentKind, id: process.env.NAME!, name: agentKind === "sub" ? "task" : "main", depth: agentKind === "sub" ? 1 : 0 } } : {}),
 	ui: { notify: (m: string) => out({ ev: "notify", m }), setStatus: (k: string, t?: string) => out({ ev: "status", t }), custom },
 	isIdle: () => idle,
 	sessionManager: { getSessionId: () => sessionId, getHeader: () => ({ titleSource: "user" }) },
@@ -64,8 +64,19 @@ const pi = {
 	},
 };
 ext(pi);
+const childHandlers: typeof handlers = new Map();
+const childTools: typeof tools = new Map();
+const childCommands: typeof commands = new Map();
+const childPi: typeof pi = {
+	...pi,
+	on: (e, h) => childHandlers.set(e, [...(childHandlers.get(e) ?? []), h]),
+	registerTool: t => childTools.set(t.name, t as never),
+	registerCommand: (name, o) => childCommands.set(name, o.handler),
+};
+ext(childPi);
 const fire = async (e: string, payload: unknown, targetCtx: unknown = ctx) => {
-	for (const h of handlers.get(e) ?? []) await h(payload, targetCtx);
+	const registrations = targetCtx === subCtx ? childHandlers : handlers;
+	for (const h of registrations.get(e) ?? []) await h(payload, targetCtx);
 };
 await fire("session_start", {});
 out({ ev: "ready", pid: process.pid });
@@ -88,7 +99,8 @@ for await (const chunk of process.stdin) {
 			await fire("session_shutdown", {}, subCtx);
 			out({ ev: "sub-ended", id: cmd.id });
 		} else if (cmd.cmd === "tool") {
-			const r = await tools.get(cmd.name)!.execute("x", cmd.params, undefined, undefined, cmd.sub ? subCtx : ctx);
+			const registrations = cmd.sub ? childTools : tools;
+			const r = await registrations.get(cmd.name)!.execute("x", cmd.params, undefined, undefined, cmd.sub ? subCtx : ctx);
 			out({ ev: "tool", id: cmd.id, text: r.content[0]!.text });
 		} else if (cmd.cmd === "command") {
 			await commands.get(cmd.name)!(cmd.args, ctx);
